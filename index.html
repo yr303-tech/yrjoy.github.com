@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ezlive - P2P 화상 강의</title>
+    <!-- Tailwind CSS 로드 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PeerJS 로드 -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <style>
+        /* 기본 글꼴 Inter 설정 */
+        body {
+            font-family: 'Inter', 'Noto Sans KR', sans-serif;
+            overflow: hidden; /* 페이지 스크롤 방지 */
+        }
+        /* 비디오가 정사각형 비율을 유지하도록 함 (1:1) */
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* 비디오가 요소를 꽉 채우도록 함 */
+            border-radius: 0.5rem; /* 둥근 모서리 */
+            background-color: #333;
+        }
+        /* 채팅 메시지 스크롤바 */
+        #messages-list {
+            scroll-behavior: smooth;
+        }
+        /* 파일 전송 프로그레스 (임시) */
+        .file-progress {
+            display: block;
+            width: 100%;
+            background-color: #e2e8f0;
+            border-radius: 0.25rem;
+            overflow: hidden;
+        }
+        .file-progress-bar {
+            width: 0;
+            height: 0.5rem;
+            background-color: #4ade80;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white h-screen flex items-center justify-center">
+
+    <!-- 
+      *****************************************************************
+      * 중요: 인앱 브라우저 감지 및 차단 스크립트
+      *****************************************************************
+    -->
+    <div id="inapp-blocker" class="hidden fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center p-8">
+        <div class="bg-white rounded-lg p-6 text-center text-gray-800 max-w-sm">
+            <h2 class="text-2xl font-bold mb-4">브라우저 안내</h2>
+            <p class="mb-6">카메라, 마이크 기능을 정상적으로 사용하려면<br/><strong>Chrome</strong> 또는 <strong>Safari</strong>와 같은<br/>기본 브라우저로 열어주세요.</p>
+            <p class="text-sm text-gray-500">카카오톡이나 네이버 앱 등의 인앱 브라우저에서는<br/>WebRTC 기능이 제한될 수 있습니다.</p>
+        </div>
+    </div>
+
+    <!-- 1. 홈 페이지 -->
+    <div id="home-page" class="text-center">
+        <h1 class="text-5xl font-bold mb-4 text-blue-400">ezlive</h1>
+        <p class="text-xl text-gray-300 mb-12">P2P 화상 강의 솔루션</p>
+        <div class="space-y-4">
+            <button id="create-room-btn" class="w-64 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg text-lg transition duration-200 shadow-lg">
+                교사용 화상강의 생성
+            </button>
+            <button id="join-room-btn" class="w-64 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg text-lg transition duration-200 shadow-lg">
+                학생용 강의참여
+            </button>
+        </div>
+        <!-- HTTPS 경고 메시지 -->
+        <p id="https-warning" class="mt-8 text-yellow-400 text-sm max-w-md mx-auto hidden">
+            <strong>경고:</strong> 마이크와 카메라를 사용하려면 이 페이지가 <strong>https://</strong> 로 서비스되어야 합니다. (현재 'http://' 또는 'file://' 에서는 작동하지 않습니다.)
+        </p>
+    </div>
+
+    <!-- 2. 교사용 (방 생성) 페이지 -->
+    <div id="host-page" class="hidden text-center p-4">
+        <h2 class="text-2xl font-bold mb-6">교사용 강의 생성</h2>
+        <p class="text-gray-300 mb-4">학생에게 이 ID를 공유하세요:</p>
+        <div class="bg-gray-800 rounded-lg p-4 mb-6">
+            <span id="room-id" class="text-3xl font-mono tracking-widest text-yellow-400"></span>
+        </div>
+        <p class="text-gray-400 mb-6">학생이 접속을 기다리는 중...</p>
+        <div id="loading-spinner" class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400 mx-auto"></div>
+        <button id="host-back-btn" class="mt-8 text-gray-400 hover:text-white transition">← 뒤로가기</button>
+    </div>
+
+    <!-- 3. 학생용 (방 참여) 페이지 -->
+    <div id="join-page" class="hidden p-4 w-full max-w-sm">
+        <h2 class="text-2xl font-bold mb-6 text-center">학생용 강의 참여</h2>
+        <form id="join-form">
+            <div class="mb-4">
+                <label for="room-id-input" class="block text-sm font-medium text-gray-300 mb-2">선생님께 받은 ID</label>
+                <input type="text" id="room-id-input" class="w-full bg-gray-700 border border-gray-600 text-white px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-lg font-mono" placeholder="Room ID" required>
+            </div>
+            <!--
+            <div class="mb-4">
+                <label for="student-id-input" class="block text-sm font-medium text-gray-300 mb-2">내 이름</label>
+                <input type="text" id="student-id-input" class="w-full bg-gray-700 border border-gray-600 text-white px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="이름 입력">
+            </div>
+            <div class="mb-6">
+                <label for="student-pw-input" class="block text-sm font-medium text-gray-300 mb-2">비밀번호</label>
+                <input type="password" id="student-pw-input" class="w-full bg-gray-700 border border-gray-600 text-white px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="비밀번호 입력">
+            </div>
+            -->
+            <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg text-lg transition duration-200 shadow-lg">
+                강의 참여하기
+            </button>
+        </form>
+        <button id="join-back-btn" class="mt-8 text-gray-400 hover:text-white transition w-full text-center">← 뒤로가기</button>
+    </div>
+
+    <!-- 4. 화상 강의실 페이지 -->
+    <div id="room-page" class="hidden h-screen w-screen flex flex-col md:flex-row bg-gray-800">
+        
+        <!-- 왼쪽: 채팅창 (모바일에서는 하단) -->
+        <div class="w-full md:w-1/3 lg:w-1/4 h-1/2 md:h-full flex flex-col bg-gray-900 p-4 order-2 md:order-1">
+            <h3 class="text-xl font-bold mb-4 pb-2 border-b border-gray-700">실시간 채팅</h3>
+            <!-- 메시지 목록 -->
+            <div id="messages-list" class="flex-1 overflow-y-auto mb-4 space-y-3">
+                <!-- 메시지 예시 -->
+                <!-- 
+                <div class="chat-message self-start">
+                    <span class="block text-sm text-gray-400">상대방</span>
+                    <div class="bg-gray-700 rounded-lg p-3 max-w-xs">
+                        <p>안녕하세요!</p>
+                    </div>
+                </div>
+                <div class="chat-message self-end items-end">
+                    <span class="block text-sm text-gray-400 text-right">나</span>
+                    <div class="bg-blue-600 rounded-lg p-3 max-w-xs">
+                        <p>네, 반갑습니다.</p>
+                    </div>
+                </div> 
+                -->
+            </div>
+            <!-- 채팅 입력 폼 -->
+            <form id="chat-form" class="flex-shrink-0">
+                <div class="flex items-center space-x-2">
+                    <!-- 파일 첨부 버튼 -->
+                    <label for="file-input" class="cursor-pointer p-2 rounded-full text-gray-400 hover:bg-gray-700 hover:text-white">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L12 12m6.364-6.364L12 12m0 0L5.636 5.636M12 12l6.364 6.364" />
+                        </svg>
+                    </label>
+                    <input type="file" id="file-input" class="hidden">
+                    
+                    <input type="text" id="chat-input" class="flex-1 bg-gray-700 border border-gray-600 text-white px-4 py-2 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="메시지 입력..." autocomplete="off">
+                    
+                    <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" transform="rotate(90 12 12)" />
+                        </svg>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- 오른쪽: 비디오 영역 (모바일에서는 상단) -->
+        <div class="w-full md:w-2/3 lg:w-3/4 h-1/2 md:h-full relative order-1 md:order-2">
+            
+            <!-- 컨트롤 버튼 (왼쪽 상단) -->
+            <div class="absolute top-4 left-4 z-10 flex flex-wrap gap-2">
+                <button id="toggle-audio-btn" class="control-btn bg-gray-700 bg-opacity-80 text-white p-2 rounded-full hover:bg-blue-600" title="오디오 켜기/끄기">
+                    <!-- 마이크 켜짐 -->
+                    <svg id="mic-on-icon" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm-1 3a1 1 0 00-1 1v1a4 4 0 004 4h1a4 4 0 004-4V8a1 1 0 00-1-1H6zM13 15a1 1 0 011 1v.01a5 5 0 01-5 4.99A5 5 0 014 16.01V16a1 1 0 011-1h8z" clip-rule="evenodd" />
+                    </svg>
+                    <!-- 마이크 꺼짐 (hidden) -->
+                    <svg id="mic-off-icon" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 hidden" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 8a1 1 0 011-1h.01a1 1 0 010 2H8a1 1 0 01-1-1zm4 0a1 1 0 011-1h.01a1 1 0 010 2H12a1 1 0 01-1-1zm-2 4a1 1 0 011-1h.01a1 1 0 010 2H10a1 1 0 01-1-1z" clip-rule="evenodd" />
+                        <path d="M13.586 12.172a1 1 0 00-1.414 1.414l-1.586-1.586a1 1 0 10-1.414 1.414l1.586 1.586a1 1 0 101.414-1.414l1.586 1.586a1 1 0 001.414-1.414l-1.586-1.586zM6.414 7.828a1 1 0 001.414-1.414L6.243 4.828a1 1 0 10-1.414 1.414L6.414 7.828z"/>
+                        <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm-1 3a1 1 0 00-1 1v1a4 4 0 004 4h1a4 4 0 004-4V8a1 1 0 00-1-1H6zM13 15a1 1 0 011 1v.01a5 5 0 01-5 4.99A5 5 0 014 16.01V16a1 1 0 011-1h8z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+                <button id="toggle-video-btn" class="control-btn bg-gray-700 bg-opacity-80 text-white p-2 rounded-full hover:bg-blue-600" title="비디오 켜기/끄기">
+                    <!-- 비디오 켜짐 -->
+                    <svg id="video-on-icon" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 5.447a1 1 0 00-1.414 0l-2.293 2.293V12.25a1 1 0 001.707.707L14 11.414V8.586l1.293-1.293a1 1 0 000-1.414l-.033-.033z" />
+                    </svg>
+                    <!-- 비디오 꺼짐 (hidden) -->
+                    <svg id="video-off-icon" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 hidden" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 8a1 1 0 011-1h.01a1 1 0 010 2H8a1 1 0 01-1-1zm4 0a1 1 0 011-1h.01a1 1 0 010 2H12a1 1 0 01-1-1zm-2 4a1 1 0 011-1h.01a1 1 0 010 2H10a1 1 0 01-1-1z" clip-rule="evenodd" />
+                        <path d="M2.929 2.929a1 1 0 00-1.414 1.414l12.344 12.344a1 1 0 001.414-1.414L2.929 2.929z" />
+                    </svg>
+                </button>
+                <button id="share-screen-btn" class="control-btn bg-gray-700 bg-opacity-80 text-white p-2 rounded-full hover:bg-blue-600" title="화면 공유">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1l-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                </button>
+                <button id="download-chat-btn" class="control-btn bg-gray-700 bg-opacity-80 text-white p-2 rounded-full hover:bg-blue-600" title="채팅 기록 저장 (CSV)">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+                <button id="pip-local-btn" class="control-btn bg-gray-700 bg-opacity-80 text-white p-2 rounded-full hover:bg-blue-600" title="내 화면 작게 보기 (PIP)">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 4H3v7m0-7l7 7m11-7h-7v7m0-7l7 7M10 20H3v-7m0 7l7-7m11 7h-7v-7m0 7l7-7" />
+                    </svg>
+                </button>
+                <button id="pip-remote-btn" class="control-btn bg-gray-700 bg-opacity-80 text-white p-2 rounded-full hover:bg-blue-600" title="상대 화면 작게 보기 (PIP)">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                </button>
+                <button id="hangup-btn" class="control-btn bg-red-600 text-white p-2 rounded-full hover:bg-red-700" title="종료">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8l2-2m0 0l2 2m-2-2v6a2 2 0 01-2 2H6a2 2 0 01-2-2V6m0 0l2 2m-2-2l2-2" transform="rotate(135 12 12)" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- 비디오 그리드 (1:1) -->
+            <div class="h-full w-full grid grid-cols-1 md:grid-cols-2 gap-2 p-4">
+                <div class="aspect-square">
+                    <video id="remote-video" autoplay playsinline></video>
+                    <span class="absolute bottom-6 right-6 bg-black bg-opacity-50 px-2 py-1 rounded text-sm">상대방</span>
+                </div>
+                <div class="aspect-square">
+                    <video id="local-video" muted autoplay playsinline></video>
+                    <span class="absolute bottom-6 left-6 bg-black bg-opacity-50 px-2 py-1 rounded text-sm">내 화면</span>
+                </div>
+            </div>
+
+            <!-- 전체 화면 버튼 -->
+            <button id="fullscreen-btn" class_="absolute bottom-4 right-4 z-10 bg-gray-700 bg-opacity-80 text-white p-2 rounded-full hover:bg-blue-600" title="전체화면">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 1v4m0 0h-4m4 0l-5-5" />
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- 알림 메시지 (팝업) -->
+    <div id="alert-modal" class="hidden fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4">
+        <div class="bg-gray-800 rounded-lg shadow-xl p-6 max-w-sm w-full">
+            <h3 id="alert-title" class="text-xl font-bold mb-4">알림</h3>
+            <p id="alert-message" class="text-gray-300 mb-6"></p>
+            <button id="alert-close-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition">
+                확인
+            </button>
+        </div>
+    </div>
+
+
+    <script>
+        // --- 인앱 브라우저 감지 ---
+        (function() {
+            const userAgent = navigator.userAgent.toLowerCase();
+            const isKakao = userAgent.includes('kakaotalk');
+            const isLine = userAgent.includes('line');
+            const isNaver = userAgent.includes('naver');
+            const isFacebook = userAgent.includes('fb_iab');
+            // 기타 인앱 브라우저 키워드 추가 가능
+            
+            const isInApp = isKakao || isLine || isNaver || isFacebook;
+            
+            if (isInApp) {
+                document.getElementById('inapp-blocker').classList.remove('hidden');
+            }
+        })();
+
+
+        // --- 유틸리티 함수 ---
+        const $ = (selector) => document.querySelector(selector);
+        
+        // 페이지 표시 함수
+        const showPage = (pageId) => {
+            ['home-page', 'host-page', 'join-page', 'room-page'].forEach(id => {
+                $(`#${id}`).classList.add('hidden');
+            });
+            $(`#${pageId}`).classList.remove('hidden');
+        };
+
+        // 알림 모달 표시
+        const showAlert = (title, message) => {
+            $('#alert-title').textContent = title;
+            $('#alert-message').textContent = message;
+            $('#alert-modal').classList.remove('hidden');
+        };
+        $('#alert-close-btn').addEventListener('click', () => {
+            $('#alert-modal').classList.add('hidden');
+        });
+
+        // HTTPS 경고
+        if (window.location.protocol !== 'https:') {
+            $('#https-warning').classList.remove('hidden');
+        }
+
+        // --- 전역 변수 ---
+        let peer = null;
+        let dataConnection = null;
+        let mediaConnection = null;
+        let localStream = null;
+        let remoteStream = null;
+        let currentRoomId = null;
+        let chatHistory = []; // { sender, message, type, timestamp }
+        let isAudioEnabled = true;
+        let isVideoEnabled = true;
+        let isScreenSharing = false;
+
+        // --- 페이지 탐색 로직 ---
+        $('#create-room-btn').addEventListener('click', () => showPage('host-page'));
+        $('#join-room-btn').addEventListener('click', () => showPage('join-page'));
+        $('#host-back-btn').addEventListener('click', () => {
+            if (peer) peer.destroy();
+            showPage('home-page');
+        });
+        $('#join-back-btn').addEventListener('click', () => showPage('home-page'));
+
+
+        // --- 미디어 스트림 시작 ---
+        const startMedia = async () => {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: {
+                        echoCancellation: true, // 에코 캔슬링
+                        noiseSuppression: true // 노이즈 억제
+                    }
+                });
+                $('#local-video').srcObject = localStream;
+            } catch (err) {
+                console.error('미디어 장치에 접근할 수 없습니다:', err);
+                showAlert(
+                    '오류: 미디어 접근 실패', 
+                    '카메라 또는 마이크에 접근할 수 없습니다. 브라우저 설정(주소창 왼쪽 자물쇠 아이콘)에서 권한을 허용했는지 확인해주세요. 이 페이지는 https:// 에서만 작동합니다.'
+                );
+                showPage('home-page');
+            }
+        };
+
+        // --- PeerJS 공통 설정 ---
+        const initializePeer = (onOpenCallback) => {
+            if (peer) peer.destroy(); // 기존 peer 객체 파괴
+            
+            // PeerJS 서버를 직접 운영하지 않는 경우, 기본 PeerJS 서버 사용
+            peer = new Peer(undefined, {
+                host: 'peerjs-server-v2.herokuapp.com', // PeerJS에서 제공하는 공개 서버
+                port: 443,
+                path: '/peerjs',
+                secure: true
+            });
+
+            peer.on('open', (id) => {
+                console.log('PeerJS 연결 성공. ID:', id);
+                onOpenCallback(id);
+            });
+
+            peer.on('connection', (conn) => {
+                console.log('새로운 데이터 연결 수신');
+                setupDataConnection(conn);
+            });
+
+            peer.on('call', (call) => {
+                console.log('새로운 미디어 콜 수신');
+                // 미디어 스트림이 준비되었는지 확인
+                if (!localStream) {
+                    console.warn('로컬 스트림이 준비되지 않아 콜을 받을 수 없습니다.');
+                    return;
+                }
+                call.answer(localStream);
+                setupMediaConnection(call);
+            });
+
+            peer.on('error', (err) => {
+                console.error('PeerJS 오류:', err);
+                showAlert('연결 오류', `PeerJS 연결에 실패했습니다: ${err.message}. 페이지를 새로고침하세요.`);
+                if (err.type === 'peer-unavailable') {
+                    // 학생이 잘못된 ID 입력 시
+                    showPage('join-page');
+                }
+            });
+
+            peer.on('disconnected', () => {
+                console.warn('PeerJS 서버와 연결이 끊겼습니다. 재연결 시도...');
+                // peer.reconnect(); // 자동 재연결
+            });
+        };
+
+        // --- 1. 교사: 방 생성 로직 ---
+        $('#create-room-btn').addEventListener('click', async () => {
+            await startMedia(); // 먼저 미디어 권한 받기
+            if (!localStream) return; // 미디어 시작 실패 시 중단
+
+            showPage('host-page');
+            initializePeer((id) => {
+                currentRoomId = id;
+                $('#room-id').textContent = id;
+            });
+        });
+
+        // --- 2. 학생: 방 참여 로직 ---
+        $('#join-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const roomIdInput = $('#room-id-input').value.trim();
+            if (!roomIdInput) {
+                showAlert('오류', '참여할 ID를 입력하세요.');
+                return;
+            }
+            
+            await startMedia(); // 미디어 권한 받기
+            if (!localStream) return; // 미디어 시작 실패 시 중단
+
+            showAlert('연결 중...', '강의실에 참여하고 있습니다...');
+            currentRoomId = roomIdInput;
+            
+            initializePeer(() => {
+                // Peer가 열리면 데이터 연결 시도
+                const conn = peer.connect(currentRoomId);
+                setupDataConnection(conn);
+                
+                // 미디어 콜 시도
+                const call = peer.call(currentRoomId, localStream);
+                setupMediaConnection(call);
+            });
+        });
+
+
+        // --- 3. 연결 설정 (공통) ---
+
+        // 데이터 채널 설정 (채팅, 파일)
+        const setupDataConnection = (conn) => {
+            dataConnection = conn;
+            
+            dataConnection.on('open', () => {
+                console.log('데이터 연결 성공:', dataConnection.peer);
+                // 연결 성공 시 방 페이지로 이동
+                showPage('room-page');
+                $('#alert-modal').classList.add('hidden'); // '연결 중' 모달 닫기
+                
+                // 입장 메시지 전송 (예시)
+                sendChat("입장했습니다.");
+            });
+
+            dataConnection.on('data', (data) => {
+                console.log('데이터 수신:', data.type);
+                if (data.type === 'chat') {
+                    addChatMessage(dataConnection.peer, data.message);
+                } else if (data.type === 'file') {
+                    receiveFile(data);
+                }
+            });
+
+            dataConnection.on('close', () => {
+                console.log('데이터 연결이 닫혔습니다.');
+                showAlert('연결 종료', '상대방과의 연결이 끊겼습니다.');
+                hangUp();
+            });
+        };
+
+        // 미디어 채널 설정 (비디오, 오디오)
+        const setupMediaConnection = (call) => {
+            mediaConnection = call;
+            
+            call.on('stream', (stream) => {
+                console.log('원격 스트림 수신');
+                remoteStream = stream;
+                $('#remote-video').srcObject = remoteStream;
+            });
+
+            call.on('close', () => {
+                console.log('미디어 연결이 닫혔습니다.');
+                $('#remote-video').srcObject = null;
+            });
+        };
+
+        // --- 4. 강의실 기능 ---
+
+        // 채팅 메시지 UI 추가
+        const addChatMessage = (senderName, message, options = {}) => {
+            const { isLocal = false, fileInfo = null } = options;
+            
+            const messagesList = $('#messages-list');
+            const messageEl = document.createElement('div');
+            messageEl.classList.add('chat-message', 'w-full', 'flex', 'flex-col');
+            
+            const sender = isLocal ? '나' : (senderName.substring(0, 8) || '상대방');
+            const alignClass = isLocal ? 'self-end items-end' : 'self-start items-start';
+            const bubbleClass = isLocal ? 'bg-blue-600' : 'bg-gray-700';
+            const textAlign = isLocal ? 'text-right' : 'text-left';
+
+            let messageContent = '';
+            
+            if (fileInfo) {
+                // 파일 메시지
+                if (isLocal) {
+                    messageContent = `<p>파일 전송 중: ${fileInfo.name} (${(fileInfo.size / 1024 / 1024).toFixed(2)} MB)</p>`;
+                } else {
+                    // 파일 수신 (다운로드 링크)
+                    const fileBlob = new Blob([fileInfo.data], { type: fileInfo.type });
+                    const downloadUrl = URL.createObjectURL(fileBlob);
+                    messageContent = `
+                        <p>파일 수신: ${fileInfo.name}</p>
+                        <a href="${downloadUrl}" download="${fileInfo.name}" class="mt-2 inline-block bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700">
+                            다운로드 (${(fileInfo.size / 1024 / 1024).toFixed(2)} MB)
+                        </a>`;
+                }
+            } else {
+                // 일반 텍스트 메시지
+                messageContent = `<p>${message.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`;
+            }
+
+            messageEl.innerHTML = `
+                <span class="block text-sm text-gray-400 ${textAlign} px-1">${sender}</span>
+                <div class="${bubbleClass} rounded-lg p-3 max-w-xs ${alignClass}">
+                    ${messageContent}
+                </div>
+            `;
+            
+            messagesList.appendChild(messageEl);
+            messagesList.scrollTop = messagesList.scrollHeight; // 스크롤 맨 아래로
+
+            // 채팅 기록 저장
+            if (!fileInfo) { // 파일 데이터 자체는 저장하지 않음
+                chatHistory.push({
+                    sender: sender,
+                    message: message,
+                    type: fileInfo ? 'file' : 'chat',
+                    timestamp: new Date().toISOString()
+                });
+            }
+        };
+
+        // 채팅 전송
+        const sendChat = (message) => {
+            if (dataConnection && dataConnection.open) {
+                const data = { type: 'chat', message: message };
+                dataConnection.send(data);
+                addChatMessage('나', message, { isLocal: true });
+            }
+        };
+        
+        $('#chat-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const input = $('#chat-input');
+            const message = input.value.trim();
+            if (message) {
+                sendChat(message);
+                input.value = '';
+            }
+        });
+
+        // 파일 전송
+        $('#file-input').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // 파일 크기 제한 (예: 50MB)
+            if (file.size > 50 * 1024 * 1024) {
+                showAlert('파일 전송 오류', '파일 크기가 50MB를 초과할 수 없습니다.');
+                return;
+            }
+
+            if (dataConnection && dataConnection.open) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const arrayBuffer = event.target.result;
+                    const data = {
+                        type: 'file',
+                        name: file.name,
+                        fileType: file.type,
+                        size: file.size,
+                        data: arrayBuffer
+                    };
+                    dataConnection.send(data);
+                    
+                    // UI에 파일 전송 중 표시
+                    addChatMessage('나', '', { 
+                        isLocal: true, 
+                        fileInfo: { name: file.name, size: file.size } 
+                    });
+                };
+                reader.readAsArrayBuffer(file);
+            }
+            
+            // input 초기화 (같은 파일 다시 올릴 수 있도록)
+            e.target.value = null;
+        });
+        
+        // 파일 수신
+        const receiveFile = (fileData) => {
+            addChatMessage(dataConnection.peer, '', { 
+                isLocal: false, 
+                fileInfo: { 
+                    name: fileData.name, 
+                    size: fileData.size, 
+                    type: fileData.fileType,
+                    data: fileData.data // ArrayBuffer
+                }
+            });
+        };
+
+
+        // 오디오 토글
+        $('#toggle-audio-btn').addEventListener('click', () => {
+            isAudioEnabled = !isAudioEnabled;
+            localStream.getAudioTracks()[0].enabled = isAudioEnabled;
+            $('#mic-on-icon').classList.toggle('hidden', !isAudioEnabled);
+            $('#mic-off-icon').classList.toggle('hidden', isAudioEnabled);
+        });
+
+        // 비디오 토글
+        $('#toggle-video-btn').addEventListener('click', () => {
+            isVideoEnabled = !isVideoEnabled;
+            localStream.getVideoTracks()[0].enabled = isVideoEnabled;
+            $('#video-on-icon').classList.toggle('hidden', !isVideoEnabled);
+            $('#video-off-icon').classList.toggle('hidden', isVideoEnabled);
+        });
+
+        // 화면 공유 (및 중지)
+        const startScreenShare = async () => {
+            try {
+                const screenStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: true,
+                    audio: true // 시스템 오디오 공유 (선택적)
+                });
+
+                const screenTrack = screenStream.getVideoTracks()[0];
+                const localVideoTrack = localStream.getVideoTracks()[0];
+                
+                // 원격 피어에게 트랙 교체 알림
+                if (mediaConnection) {
+                    mediaConnection.peerConnection.getSenders()[1].replaceTrack(screenTrack);
+                }
+                
+                // 로컬 화면에도 공유 화면 표시 (선택적)
+                // $('#local-video').srcObject = screenStream; // 이렇게 하면 내 캠이 안보임
+                
+                // 화면 공유 중지 시 원래 카메라로 복귀
+                screenTrack.onended = () => {
+                    if (mediaConnection) {
+                        mediaConnection.peerConnection.getSenders()[1].replaceTrack(localVideoTrack);
+                    }
+                    isScreenSharing = false;
+                    $('#share-screen-btn').classList.remove('bg-red-500');
+                };
+                
+                isScreenSharing = true;
+                $('#share-screen-btn').classList.add('bg-red-500'); // 공유 중임을 표시
+                
+            } catch (err) {
+                console.error('화면 공유 실패:', err);
+            }
+        };
+
+        $('#share-screen-btn').addEventListener('click', () => {
+            if (isScreenSharing) {
+                // 화면 공유 중지 (수동 중지는 지원이 복잡함, 사용자가 브라우저 UI로 중지하도록 유도)
+                showAlert('화면 공유', '화면 공유를 중지하려면 브라우저의 "공유 중지" 버튼을 누르세요.');
+            } else {
+                startScreenShare();
+            }
+        });
+
+
+        // 채팅 기록 CSV 다운로드
+        $('#download-chat-btn').addEventListener('click', () => {
+            if (chatHistory.length === 0) {
+                showAlert('알림', '저장할 채팅 기록이 없습니다.');
+                return;
+            }
+
+            let csvContent = "data:text/csv;charset=utf-8,\uFEFF"; // UTF-8 BOM
+            csvContent += "Timestamp,Sender,Type,Message\n";
+
+            chatHistory.forEach(row => {
+                const timestamp = `"${row.timestamp}"`;
+                const sender = `"${row.sender}"`;
+                const type = `"${row.type}"`;
+                const message = `"${row.message.replace(/"/g, '""')}"`; // CSV 이스케이프
+                csvContent += [timestamp, sender, type, message].join(",") + "\n";
+            });
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `ezlive_chat_${currentRoomId}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+
+        // PIP (Picture-in-Picture)
+        $('#pip-local-btn').addEventListener('click', () => {
+            if (document.pictureInPictureElement) {
+                document.exitPictureInPicture();
+            } else if (document.pictureInPictureEnabled) {
+                $('#local-video').requestPictureInPicture().catch(err => console.error(err));
+            }
+        });
+
+        $('#pip-remote-btn').addEventListener('click', () => {
+            if (document.pictureInPictureElement) {
+                document.exitPictureInPicture();
+            } else if (document.pictureInPictureEnabled) {
+                $('#remote-video').requestPictureInPicture().catch(err => console.error(err));
+            }
+        });
+
+        // 전체화면
+        $('#fullscreen-btn').addEventListener('click', () => {
+            const elem = $('#room-page'); // 방 전체를 전체화면으로
+            if (!document.fullscreenElement) {
+                elem.requestFullscreen().catch(err => {
+                    showAlert('오류', `전체화면 모드를 시작할 수 없습니다: ${err.message}`);
+                });
+            } else {
+                document.exitFullscreen();
+            }
+        });
+
+        // 종료
+        const hangUp = () => {
+            if (dataConnection) dataConnection.close();
+            if (mediaConnection) mediaConnection.close();
+            if (peer) peer.destroy();
+            
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            
+            chatHistory = [];
+            currentRoomId = null;
+            
+            // UI 초기화
+            $('#local-video').srcObject = null;
+            $('#remote-video').srcObject = null;
+            $('#messages-list').innerHTML = '';
+            
+            showPage('home-page');
+            // location.reload(); // 가장 확실한 초기화 방법
+        };
+        $('#hangup-btn').addEventListener('click', hangUp);
+        
+        // 창 닫기/새로고침 시 연결 종료
+        window.addEventListener('beforeunload', hangUp);
+
+    </script>
+</body>
+</html>
